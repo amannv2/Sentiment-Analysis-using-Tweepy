@@ -1,10 +1,16 @@
-import creds
-
 from tweepy import API
 from tweepy import Cursor
 from tweepy.streaming import StreamListener
 from tweepy import OAuthHandler
 from tweepy import Stream
+
+from textblob import TextBlob
+import re
+
+import numpy as np
+import pandas as pd
+
+import creds
 
 
 class TwitterClient:
@@ -12,6 +18,9 @@ class TwitterClient:
         self.auth = TwitterAuthenticator().authenticate()
         self.twitter_client = API(self.auth)
         self.twitter_user = twitter_user
+
+    def get_twitter_client_api(self):
+        return self.twitter_client
 
     # retrieve user's tweets
     def get_user_timeline_tweets(self, num_tweets):
@@ -44,6 +53,7 @@ class TwitterStreamer:
     """
     This class streams live tweets.
     """
+
     def __init__(self):
         self.twitter_auth = TwitterAuthenticator()
 
@@ -52,8 +62,8 @@ class TwitterStreamer:
         listener = TwitterListener(fetched_tweets_filename)
 
         auth = self.twitter_auth.authenticate()
-        stream = Stream(auth, listener)
-        # only stream tweets containing specified hastags
+        stream = Stream(auth, listener)  # , tweet_mode='extended')
+        # only stream tweets containing specified hash tags
         stream.filter(track=hash_tag_list)
 
 
@@ -83,19 +93,67 @@ class TwitterListener(StreamListener):
         print(status_code)
 
 
+class TweetAnalyzer:
+    """
+    Analyzes and categorizes content form tweet
+    """
+
+    def clean_tweet(self, tweet):
+        """
+        returns clean tweet, i.e., removes hyperlinks and special chars
+        """
+        return ' '.join(re.sub("(@[A-Za-z0-9]+)|([^0-9A-Za-z \t])|(\w+:\/\/\S+)", " ", tweet).split())
+
+    def analyze_sentiment(self, tweet):
+        analysis = TextBlob(self.clean_tweet(tweet))
+
+        # polarity is positive
+        if analysis.sentiment.polarity > 0:
+            return 1
+        # polarity is neutral
+        elif analysis.sentiment.polarity == 0:
+            return 0
+        # polarity is negative
+        else:
+            return -1
+
+    def tweets_to_data_frame(self, tweets):
+
+        # add option to not truncate data in the dataframe, None = unlimited
+        pd.set_option('display.max_colwidth', -1)
+
+        # here we are extracting text of each tweet and adding it to data frame
+        # while checking if it is a retweet or not
+        df = pd.DataFrame(
+            data=[tweet.retweeted_status.full_text if tweet.retweeted else tweet.full_text for tweet in tweets],
+            columns=['Tweets'])
+
+        # numpy array object: it'll create a new field in data frame
+        # df['id'] = np.array([tweet.id for tweet in tweets])
+        # df['source'] = np.array([tweet.source for tweet in tweets])
+        # df['date'] = np.array([tweet.created_at for tweet in tweets])
+        # df['len'] = np.array([len(tweet.full_text) for tweet in tweets])
+        return df
+
+
 if __name__ == '__main__':
-    hash_tags = input('Enter hash tag(s) you want to search <usage: hello, world, bye>: ')
+    twitter_client = TwitterClient()
+    tweet_analyzer = TweetAnalyzer()
 
-    import re
-    hash_tags = list(re.split(', |,', hash_tags))
+    api = twitter_client.get_twitter_client_api()
 
-    fetched_tweets_filename = "tweets.json"
+    # this allows us to specify the user from which we want to extract the tweet
+    # along the total umber of tweets
+    tweets = api.user_timeline(screen_name='amannv2', count=20, tweet_mode="extended")
 
-    # retrieve someone's specific details
-    # twitter_client = TwitterClient()
-    # print(twitter_client.get_user_timeline_tweets(1))
-    # print(twitter_client.get_friends(100))
+    # all possible things that we can extract from a tweet
+    # print(dir(tweets[0]))
+    # print(tweets[0].text)
 
-    # start streaming tweets
-    twitter_streamer = TwitterStreamer()
-    twitter_streamer.stream_tweets(fetched_tweets_filename, hash_tags)
+    # print(tweets[0].retweeted_status.full_text)
+    # print(tweets[0].retweeted)
+
+    df = tweet_analyzer.tweets_to_data_frame(tweets)
+    df['sentiment'] = np.array([tweet_analyzer.analyze_sentiment(tweet) for tweet in df['Tweets']])
+    print(df.head(20))
+    # print(np.mean(df['len']))
