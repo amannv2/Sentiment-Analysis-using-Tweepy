@@ -1,3 +1,6 @@
+import json
+
+import tweepy
 from tweepy import API
 from tweepy import Cursor
 from tweepy.streaming import StreamListener
@@ -5,8 +8,8 @@ from tweepy import OAuthHandler
 from tweepy import Stream
 
 from textblob import TextBlob
-import re
 
+import re
 import numpy as np
 import pandas as pd
 
@@ -31,13 +34,6 @@ class TwitterClient:
 
         return tweets
 
-    def get_friends(self, num_friends):
-        friend_list = []
-        for friend in Cursor(self.twitter_client.friends).items(num_friends):
-            friend_list.append(friend)
-
-        return friend_list
-
 
 class TwitterAuthenticator:
 
@@ -54,12 +50,13 @@ class TwitterStreamer:
     This class streams live tweets.
     """
 
-    def __init__(self):
+    def __init__(self, max=50):
         self.twitter_auth = TwitterAuthenticator()
+        self.max = max
 
     def stream_tweets(self, fetched_tweets_filename, hash_tag_list):
         # it basically is responsible for how we deal with data and errors
-        listener = TwitterListener(fetched_tweets_filename)
+        listener = TwitterListener(fetched_tweets_filename, self.max)
 
         auth = self.twitter_auth.authenticate()
         stream = Stream(auth, listener)  # , tweet_mode='extended')
@@ -69,17 +66,29 @@ class TwitterStreamer:
 
 class TwitterListener(StreamListener):
 
-    def __init__(self, fetched_tweets_filename):
-        super().__init__()
+    def __init__(self, fetched_tweets_filename, max=50):
+        super(TwitterListener, self).__init__()
         # this is where we'll store tweets
         self.fetched_tweets_filename = fetched_tweets_filename
+        self.count = 0
+        self.max = max
+        self.internal_list = []
 
     def on_data(self, raw_data):
+
+        # if max count is reached then write all tweets into a JSON file
+        if self.count == self.max:
+            with open(self.fetched_tweets_filename, 'w', encoding='utf-8') as fp:
+                json.dump(self.internal_list, fp)
+            return False
         try:
-            print(raw_data)
-            with open(self.fetched_tweets_filename, 'a', encoding='utf-8') as fp:
-                fp.write(raw_data)
-                return True
+            # convert str to dict
+            d = json.loads(raw_data)
+            # add that dict to a list
+            self.internal_list.append(d)
+            # print(d["text"])
+            self.count += 1
+            return True
 
         except BaseException as e:
             print('Error on data: %s' % str(e))
@@ -119,7 +128,7 @@ class TweetAnalyzer:
 
     def tweets_to_data_frame(self, tweets):
 
-        # add option to not truncate data in the dataframe, None = unlimited
+        # add option to not truncate data in the data frame, None = unlimited
         pd.set_option('display.max_colwidth', -1)
 
         # here we are extracting text of each tweet and adding it to data frame
@@ -128,32 +137,105 @@ class TweetAnalyzer:
             data=[tweet.retweeted_status.full_text if tweet.retweeted else tweet.full_text for tweet in tweets],
             columns=['Tweets'])
 
-        # numpy array object: it'll create a new field in data frame
-        # df['id'] = np.array([tweet.id for tweet in tweets])
-        # df['source'] = np.array([tweet.source for tweet in tweets])
-        # df['date'] = np.array([tweet.created_at for tweet in tweets])
-        # df['len'] = np.array([len(tweet.full_text) for tweet in tweets])
         return df
 
 
+def create_tweet_txt(file_name):
+
+    tweet_txt = open(file_name, "w", encoding="utf-8")
+
+    with open("tweets.json", "r", encoding="utf-8") as fp:
+        tweets = json.load(fp)
+
+    count = 1
+    for tweet in tweets:
+        try:
+            text = tweet['text']
+        except AttributeError:
+            text = tweet['extended_text']
+
+        tweet_txt.write(str(count) + ":\t" + text + "\n")
+        count += 1
+
+    tweet_txt.close()
+
+
 if __name__ == '__main__':
+
+    tweet_file = "tweets.txt"
+    fetched_tweets_filename = "tweets.json"
+
     twitter_client = TwitterClient()
     tweet_analyzer = TweetAnalyzer()
 
     api = twitter_client.get_twitter_client_api()
 
-    # this allows us to specify the user from which we want to extract the tweet
-    # along the total umber of tweets
-    tweets = api.user_timeline(screen_name='amannv2', count=20, tweet_mode="extended")
+    choice = int(input("1. Stream live tweets and analyze sentiment\n"
+                       "2. Stream tweets of someone's profile and analyze sentiment\n\n"
+                       "Please Enter Your Choice: "))
 
-    # all possible things that we can extract from a tweet
-    # print(dir(tweets[0]))
-    # print(tweets[0].text)
+    if choice == 1:
 
-    # print(tweets[0].retweeted_status.full_text)
-    # print(tweets[0].retweeted)
+        hash_tags = input("\nEnter hashtags/keywords <usage: a, b, c>: ")
+        import re
+        hash_tags = list(re.split(', |,', hash_tags))
 
-    df = tweet_analyzer.tweets_to_data_frame(tweets)
+        max_tweet = int(input("Enter maximum number of tweets: "))
+
+        print("Sit back and relax while I stream and analyze these tweets as it might take some time\n\n")
+
+        twitter_streamer = TwitterStreamer(max_tweet)
+        twitter_streamer.stream_tweets(fetched_tweets_filename, hash_tags)
+
+        with open(fetched_tweets_filename, "r") as fp:
+            all_tweets = json.load(fp)
+
+        df = pd.DataFrame(columns=['Tweets'])
+        i = 0
+        for tweet in all_tweets:
+            try:
+                tweet_text = tweet['text']
+            except AttributeError:
+                tweet_text = tweet['extended_text']
+            df.loc[i] = tweet_text
+            i = i + 1
+
+    elif choice == 2:
+
+        # this allows us to specify the user from which we want to extract the tweet
+        # along the total umber of tweets
+
+        name = input("\nEnter Screen Name(username): ")
+        max_tweet = int(input("Enter maximum number of tweets: "))
+
+        print("\nSit back and relax while I stream and analyze these tweets as it might take some time\n\n")
+
+        try:
+            tweets = api.user_timeline(screen_name=name, count=max_tweet, tweet_mode="extended")
+
+            df = tweet_analyzer.tweets_to_data_frame(tweets)
+
+        except tweepy.error.TweepError:
+            print("Something is wrong here. Is that screen name/username correct?")
+
+    else:
+        print("Invalid Choice. BYE, NOOB.")
+        exit(0)
+
+    # numpy array object: it'll create a new field in data frame
     df['sentiment'] = np.array([tweet_analyzer.analyze_sentiment(tweet) for tweet in df['Tweets']])
-    print(df.head(20))
-    # print(np.mean(df['len']))
+
+    pd.set_option('display.max_colwidth', 50)
+    print(df.head(max_tweet))
+    polarity = np.sum(df['sentiment'])
+    print(f"\nSentiment Analysis Result based on {max_tweet} tweets: ", end='')
+
+    if polarity > 0:
+        print(f"Positive({polarity})")
+    elif polarity < 0:
+        print(f"Negative({polarity})")
+    else:
+        print(f"Neutral(0)")
+
+    create_tweet_txt(tweet_file)
+    print("\nCheck 'tweets.txt' for full tweet texts")
